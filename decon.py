@@ -30,6 +30,7 @@ def load_text(file_path: str) -> str:
             return f.read().strip()
     raise ValueError("только PDF и TXT файлы")
 
+
 def _make_request(system_prompt: str, user_prompt: str) -> Optional[str]:
     prompt = {
         "modelUri": API_CONFIG["model_uri"],
@@ -65,68 +66,81 @@ def _make_request(system_prompt: str, user_prompt: str) -> Optional[str]:
         print(f"Ошибка сети: {e}")
         return None
 
+
 def extract_statements(text: str) -> List[str]:
     system_prompt = (
-        "Найдите в тексте ключевые фактические утверждения. "
-        "Выведите только утверждения, по одному в строке, без нумерации, "
-        "пояснений, маркеров и дополнительного текста."
+        "Ты читаешь текст. Найди в нём самую важную мысль автора. "
+        "Напиши каждую мысль отдельной строкой. "
+        "Без номеров, без пояснений, просто мысли."
     )
-    user_prompt = f"Текст для чтения:\n{text[:3000]}\n\nО чем самом главном говорит автор?"
+    user_prompt = f"Текст:\n{text[:3000]}\n\nКакие главные мысли здесь есть?"
     response = _make_request(system_prompt, user_prompt)
     if response:
         return [line.strip() for line in response.split("\n") if len(line.strip()) > 10]
     return []
 
+
 def extract_binary_opposition(statement: str, context: str) -> Optional[Tuple[str, str]]:
     system_prompt = (
-        "Проанализируй текст и выдели в нем два ключевых понятия. Эти понятия должны быть фундаментом текста — на них должна держаться вся логика автора."
-        "Важно: эти понятия должны быть противопоставлены друг другу (логически или по смыслу), как день и ночь или порядок и хаос. "
-        "Одно из них автор считает главным, а второе — второстепенным."
-        "Примеры: истина/ложь, природа/культура, оригинал/копия."
-        "Выведи только пару в формате: 'Главное/Второстепенное'."
+        "Проанализируй текст, выдели в нем два понятия. "
+        "Эти два понятия должны быть существенны и значимы для текста, то есть их использование должно составлять существенную часть этого текста. "
+        "При этом эти два понятия  должны  либо логически, либо семантически друг другу противопоставлены. "
+        "Примеры: правда/ложь, свобода/правила, ум/чувства. "
+        "Напиши их через слэш: Главное/Второстепенное."
     )
     user_prompt = (
-        f"ТЕКСТ:\n{context[:1000]}\n\n"
-         f"На основе этого текста найди главную оппозицию (противопоставление) для утверждения: '{statement}'"
+        f"Мысль автора: '{statement}'\n\n"
+        f"Текст вокруг:\n{context[:800]}\n\n"
+        f"Какие два слова здесь спорят? Напиши в формате Главное/Второстепенное:"
     )
     response = _make_request(system_prompt, user_prompt)
     if response and '/' in response:
-        parts = response.split('/')
-        if len(parts) == 2:
+        parts = response.strip().split('/')
+        if len(parts) == 2 and parts[0].strip() and parts[1].strip():
             return (parts[0].strip(), parts[1].strip())
     return None
 
+
 def invert_hierarchy(statement: str, opposition: Tuple[str, str]) -> str:
     system_prompt = (
-        "У нас есть два слова: {A} и {B}. Автор текста думает, что {A} — это самый главный босс. "
-        "Давай докажем, что автор ошибается! Напиши одно умное предложение о том, почему на самом деле {B} важнее, "
-        "и почему без {B} твой главный босс {A} вообще не сможет существовать."
+        "Автор считает, что {A} важнее {B}. "
+        "Покажи, почему {B} может быть не просто противоположностью {A}, "
+        "а необходимым условием для {A}. "
+        "Важно: не смешивай {B} с другими понятиями — работай только с этой парой."
     )
-    # Форматируем промпт внутри функции
     formatted_sys = system_prompt.format(A=opposition[0], B=opposition[1])
-    user_prompt = f"Почему {opposition[1]} важнее, чем {opposition[0]}?"
+    user_prompt = f"Почему {opposition[1]} необходимо для {opposition[0]}?"
     response = _make_request(formatted_sys, user_prompt)
-    return response if response else f"На самом деле {opposition[1]} важнее."
+    return response if response else f"{opposition[1]} необходимо для {opposition[0]}."
+
 
 def find_contradictory_fragments(source_text: str, inverted_assertion: str) -> List[Dict]:
     system_prompt = (
-        "Автор текста очень хочет, чтобы мы верили в его главную мысль. "
-        "Но он мог случайно проговориться. "
-        "Я дам тебе предложение (которое спорит с автором). "
-        "Найди в тексте такие кусочки или фразы, которые (если на них посмотреть хитро) подтверждают не автора, а наше спорное предложение. "
-        "Выдай ответ в формате JSON: [{'fragment': 'цитата', 'explanation': 'почему это секретное доказательство'}]"
+        "Автор текста утверждает что-то, но его собственные слова могут показывать ограничения этого утверждения. "
+        "Я дам тебе альтернативный взгляд (инверсию). "
+        "Найди в тексте фразы, которые, если посмотреть внимательно, показывают: "
+        "автор не учитывает что-то важное, или его позиция имеет границы. "
+        "Не ищи 'подтверждения' — ищи моменты, где текст сам себя ставит под вопрос. "
+        "Ответ в формате JSON: "
+        '[{"fragment": "цитата", "explanation": "какое ограничение это вскрывает"}]'
     )
-    user_prompt = f"Текст:\n{source_text[:3000]}\n\n Секретная Мысль: {inverted_assertion}"
+    user_prompt = (
+        f"Текст:\n{source_text[:2500]}\n\n"
+        f"Альтернативный взгляд: {inverted_assertion}\n\n"
+        f"Найди фразы, показывающие ограничения исходной позиции:"
+    )
     response = _make_request(system_prompt, user_prompt)
+    # ... парсинг как раньше
     if response:
         try:
             start = response.find('[')
             end = response.rfind(']') + 1
-            if start != -1 and end != 0:
+            if start != -1 and end > start:
                 return json.loads(response[start:end])
-        except:
+        except json.JSONDecodeError:
             pass
     return []
+
 
 def deconstruct_statement(statement: str, source_text: str) -> Optional[Dict]:
     opposition = extract_binary_opposition(statement, source_text)
@@ -141,6 +155,7 @@ def deconstruct_statement(statement: str, source_text: str) -> Optional[Dict]:
         "supporting_fragments": fragments
     }
 
+
 def analyze_file(file_path: str, max_statements: int = 1) -> List[Dict]:
     text = load_text(file_path)
     statements = extract_statements(text)
@@ -151,27 +166,28 @@ def analyze_file(file_path: str, max_statements: int = 1) -> List[Dict]:
             results.append(res)
     return results
 
+
 def save_results(results: List[Dict], output_path: str):
     with open(f"{output_path}.txt", "w", encoding="utf-8") as f:
         for res in results:
-            f.write(f"Утверждение ключевое: {res['statement']}\n")
-            f.write(f"Бинарные оппозиции {res['opposition']['dominant']} (главный) vs {res['opposition']['subordinate']} (скрытый)\n")
+            f.write(f"Ключевое утверждение: {res['statement']}\n")
+            f.write(f"Бинарные оппозиции: {res['opposition']['dominant']} : {res['opposition']['subordinate']}\n")
             f.write(f"Инверсия: {res['inverted_assertion']}\n")
-            f.write("Доказательства:\n")
+            f.write("Ограничения исходной позиции:\n") 
             for frag in res['supporting_fragments']:
-                f.write(f"   - Цитата: \"{frag['fragment']}\"\n")
-                f.write(f"     Почему это важно: {frag['explanation']}\n")
-            f.write("-" * 30 + "\n")
+                f.write(f"  • \"{frag['fragment']}\"\n")
+                f.write(f"    → {frag['explanation']}\n")  
+            f.write("\n")
 
 if __name__ == "__main__":
-    FILENAME = "mw.pdf" 
+    FILENAME = "ii.txt"
     script_dir = Path(__file__).parent
     target_file = script_dir / FILENAME
     
     if target_file.exists():
-        print(f" деконструкциz файла: {FILENAME}...")
+        print(f"Анализ файла: {FILENAME}...")
         final_results = analyze_file(str(target_file))
-        save_results(final_results, str(script_dir / "final_analysis"))
-        print(f"Результаты в файле final_analysis.txt")
+        save_results(final_results, str(script_dir / "analysis_ii"))
+        print(f"Результаты сохранены в analysis_ii.txt")
     else:
         print(f"Файл {FILENAME} не найден.")
