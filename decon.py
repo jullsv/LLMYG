@@ -14,8 +14,10 @@ API_CONFIG = {
     "url": "https://llm.api.cloud.yandex.net/foundationModels/v1/completion",
     "model_uri": f"gpt://{FOLDER_ID}/yandexgpt/latest",
     "temperature": 0.3,
-    "max_tokens": 2000,
+    "max_tokens": 8000,
 }
+
+
 def load_text(file_path: str) -> str:
     if file_path.endswith(".pdf"):
         reader = PdfReader(file_path)
@@ -67,32 +69,59 @@ def _make_request(system_prompt: str, user_prompt: str) -> Optional[str]:
         return None
 
 
-def extract_statements(text: str) -> List[str]:
-    system_prompt = (
-        "Ты читаешь текст. Найди в нём самую важную мысль автора. "
-        "Напиши каждую мысль отдельной строкой. "
-        "Без номеров, без пояснений, просто мысли."
-    )
-    user_prompt = f"Текст:\n{text[:3000]}\n\nКакие главные мысли здесь есть?"
+def extract_core_argument(text: str) -> str:
+    system_prompt = "Сформулируй главную идею этого текста в одном предложении. Без пояснений."
+    user_prompt = f"Текст:\n{text[:4000]}\n\nГлавная идея:"
+    return _make_request(system_prompt, user_prompt) or ""
+
+
+def extract_statements(text: str, core_argument: str = "") -> List[str]:
+    if core_argument:
+        system_prompt = (
+            "Найди 2-3 ключевых утверждения, которые раскрывают главную идею текста. "
+            "Напиши каждое утверждение отдельной строкой. Без номеров и пояснений."
+        )
+        user_prompt = f"Главная идея: {core_argument}\n\nТекст:\n{text[:3000]}\n\nКлючевые утверждения:"
+    else:
+        system_prompt = (
+            "Найди в тексте 2-3 самые важные мысли автора. "
+            "Напиши каждую мысль отдельной строкой. Без номеров и пояснений."
+        )
+        user_prompt = f"Текст:\n{text[:3000]}\n\nГлавные мысли:"
     response = _make_request(system_prompt, user_prompt)
     if response:
         return [line.strip() for line in response.split("\n") if len(line.strip()) > 10]
     return []
 
 
-def extract_binary_opposition(statement: str, context: str) -> Optional[Tuple[str, str]]:
-    system_prompt = (
-        "Проанализируй текст, выдели в нем два понятия. "
-        "Эти два понятия должны быть существенны и значимы для текста, то есть их использование должно составлять существенную часть этого текста. "
-        "При этом эти два понятия  должны  либо логически, либо семантически друг другу противопоставлены. "
-        "Примеры: правда/ложь, свобода/правила, ум/чувства. "
-        "Напиши их через слэш: Главное/Второстепенное."
-    )
-    user_prompt = (
-        f"Мысль автора: '{statement}'\n\n"
-        f"Текст вокруг:\n{context[:800]}\n\n"
-        f"Какие два слова здесь спорят? Напиши в формате Главное/Второстепенное:"
-    )
+def extract_binary_opposition(statement: str, context: str, core_argument: str = "") -> Optional[Tuple[str, str]]:
+    if core_argument:
+        system_prompt = (
+            "В тексте есть два понятия, которые спорят друг с другом. "
+            "Одно автор считает главным, второе — второстепенным. "
+            "Найди эту пару в контексте главной идеи текста. "
+            "Примеры: истина/ложь, сознание/имитация, понимание/правила. "
+            "Напиши через слэш: Главное/Второстепенное."
+        )
+        user_prompt = (
+            f"Главная идея: {core_argument}\n\n"
+            f"Утверждение: '{statement}'\n\n"
+            f"Контекст:\n{context[:800]}\n\n"
+            f"Найди оппозицию в формате Главное/Второстепенное:"
+        )
+    else:
+        system_prompt = (
+            "В тексте есть два слова, которые спорят друг с другом. "
+            "Одно слово автор любит больше, второе — меньше. "
+            "Найди эту пару слов. "
+            "Примеры: правда/ложь, свобода/правила, ум/чувства. "
+            "Напиши их через слэш: Главное/Второстепенное."
+        )
+        user_prompt = (
+            f"Утверждение: '{statement}'\n\n"
+            f"Контекст:\n{context[:800]}\n\n"
+            f"Какие два слова здесь спорят? Напиши в формате Главное/Второстепенное:"
+        )
     response = _make_request(system_prompt, user_prompt)
     if response and '/' in response:
         parts = response.strip().split('/')
@@ -101,36 +130,61 @@ def extract_binary_opposition(statement: str, context: str) -> Optional[Tuple[st
     return None
 
 
-def invert_hierarchy(statement: str, opposition: Tuple[str, str]) -> str:
-    system_prompt = (
-        "Автор считает, что {A} важнее {B}. "
-        "Покажи, почему {B} может быть не просто противоположностью {A}, "
-        "а необходимым условием для {A}. "
-        "Важно: не смешивай {B} с другими понятиями — работай только с этой парой."
-    )
-    formatted_sys = system_prompt.format(A=opposition[0], B=opposition[1])
-    user_prompt = f"Почему {opposition[1]} необходимо для {opposition[0]}?"
-    response = _make_request(formatted_sys, user_prompt)
-    return response if response else f"{opposition[1]} необходимо для {opposition[0]}."
+def invert_hierarchy(statement: str, opposition: Tuple[str, str], core_argument: str = "") -> str:
+    if core_argument:
+        system_prompt = (
+            "Автор утверждает: {core}. "
+            "Он считает, что {A} важнее {B}. "
+            "Покажи, почему само это различение может быть не онтологической границей, "
+            "а культурной или концептуальной установкой, которую можно поставить под вопрос. "
+            "Не соглашайся с автором — найди точку, где его аргумент опирается на неочевидное допущение."
+        )
+        formatted = system_prompt.format(A=opposition[0], B=opposition[1], core=core_argument)
+        user_prompt = f"Какое допущение в аргументе автора можно поставить под вопрос?"
+    else:
+        system_prompt = (
+            "Автор считает, что {A} важнее {B}. "
+            "Покажи, почему {B} может быть не просто противоположностью {A}, "
+            "а необходимым условием для {A}. "
+            "Важно: не смешивай {B} с другими понятиями — работай только с этой парой."
+        )
+        formatted = system_prompt.format(A=opposition[0], B=opposition[1])
+        user_prompt = f"Почему {opposition[1]} необходимо для {opposition[0]}?"
+    response = _make_request(formatted, user_prompt)
+    return response if response else f"Различение {opposition[0]}/{opposition[1]} может быть условным"
 
 
-def find_contradictory_fragments(source_text: str, inverted_assertion: str) -> List[Dict]:
-    system_prompt = (
-        "Автор текста утверждает что-то, но его собственные слова могут показывать ограничения этого утверждения. "
-        "Я дам тебе альтернативный взгляд (инверсию). "
-        "Найди в тексте фразы, которые, если посмотреть внимательно, показывают: "
-        "автор не учитывает что-то важное, или его позиция имеет границы. "
-        "Не ищи 'подтверждения' — ищи моменты, где текст сам себя ставит под вопрос. "
-        "Ответ в формате JSON: "
-        '[{"fragment": "цитата", "explanation": "какое ограничение это вскрывает"}]'
-    )
-    user_prompt = (
-        f"Текст:\n{source_text[:2500]}\n\n"
-        f"Альтернативный взгляд: {inverted_assertion}\n\n"
-        f"Найди фразы, показывающие ограничения исходной позиции:"
-    )
+def find_contradictory_fragments(source_text: str, inverted_assertion: str, core_argument: str = "") -> List[Dict]:
+    if core_argument:
+        system_prompt = (
+            "Автор текста утверждает что-то, но его собственные слова могут показывать ограничения этого утверждения. "
+            "Я дам тебе альтернативный взгляд (инверсию). "
+            "Найди в тексте фразы, которые, если посмотреть внимательно, показывают: "
+            "автор не учитывает что-то важное, или его позиция имеет границы. "
+            "Не ищи 'подтверждения' — ищи моменты, где текст сам себя ставит под вопрос. "
+            "Ответ в формате JSON: "
+            '[{"fragment": "цитата", "explanation": "какое ограничение это вскрывает"}]'
+        )
+        user_prompt = (
+            f"Главная идея автора: {core_argument}\n\n"
+            f"Текст:\n{source_text[:2500]}\n\n"
+            f"Альтернативный взгляд: {inverted_assertion}\n\n"
+            f"Найди фразы, показывающие ограничения исходной позиции:"
+        )
+    else:
+        system_prompt = (
+            "Автор написал текст и хочет, чтобы мы поверили в одну мысль. "
+            "Но иногда автор сам пишет такие фразы, которые (если посмотреть внимательно) говорят обратное. "
+            "Я дам тебе 'хитрую мысль'. Найди в тексте фразы, которые её как бы подтверждают. "
+            "Ответ дай в формате JSON: "
+            '[{"fragment": "цитата из текста", "explanation": "почему это подтверждает хитрую мысль"}]'
+        )
+        user_prompt = (
+            f"Текст:\n{source_text[:2500]}\n\n"
+            f"Хитрая мысль: {inverted_assertion}\n\n"
+            f"Найди фразы в тексте, которые её подтверждают:"
+        )
     response = _make_request(system_prompt, user_prompt)
-    # ... парсинг как раньше
     if response:
         try:
             start = response.find('[')
@@ -142,26 +196,50 @@ def find_contradictory_fragments(source_text: str, inverted_assertion: str) -> L
     return []
 
 
-def deconstruct_statement(statement: str, source_text: str) -> Optional[Dict]:
-    opposition = extract_binary_opposition(statement, source_text)
+def validate_fragment(fragment: str, inverted_assertion: str, full_text: str) -> str:
+    system_prompt = (
+        "Проверь, действительно ли эта цитата подтверждает альтернативный взгляд. "
+        "Если связь слабая — предложи более релевантный фрагмент из текста. "
+        "Ответь кратко: 'подтверждает' / 'слабая связь' / 'не подтверждает'."
+    )
+    user_prompt = (
+        f"Цитата: {fragment}\n"
+        f"Альтернативный взгляд: {inverted_assertion}\n"
+        f"Полный текст: {full_text[:4000]}\n\n"
+        f"Оцени связь:"
+    )
+    return _make_request(system_prompt, user_prompt) or "не подтверждает"
+
+
+def deconstruct_statement(statement: str, source_text: str, core_argument: str = "") -> Optional[Dict]:
+    opposition = extract_binary_opposition(statement, source_text, core_argument)
     if not opposition:
         return None
-    inverted = invert_hierarchy(statement, opposition)
-    fragments = find_contradictory_fragments(source_text, inverted)
+    inverted = invert_hierarchy(statement, opposition, core_argument)
+    fragments = find_contradictory_fragments(source_text, inverted, core_argument)
+    validated_fragments = []
+    for frag in fragments[:3]:
+        validation = validate_fragment(frag['fragment'], inverted, source_text)
+        if validation == "подтверждает":
+            validated_fragments.append(frag)
+    if not validated_fragments:
+        validated_fragments = fragments[:2]
     return {
         "statement": statement,
+        "core_argument": core_argument,
         "opposition": {"dominant": opposition[0], "subordinate": opposition[1]},
         "inverted_assertion": inverted,
-        "supporting_fragments": fragments
+        "supporting_fragments": validated_fragments
     }
 
 
-def analyze_file(file_path: str, max_statements: int = 1) -> List[Dict]:
+def analyze_file(file_path: str, max_statements: int = 2) -> List[Dict]:
     text = load_text(file_path)
-    statements = extract_statements(text)
+    core_argument = extract_core_argument(text)
+    statements = extract_statements(text, core_argument)
     results = []
     for stmt in statements[:max_statements]:
-        res = deconstruct_statement(stmt, text)
+        res = deconstruct_statement(stmt, text, core_argument)
         if res:
             results.append(res)
     return results
@@ -171,13 +249,15 @@ def save_results(results: List[Dict], output_path: str):
     with open(f"{output_path}.txt", "w", encoding="utf-8") as f:
         for res in results:
             f.write(f"Ключевое утверждение: {res['statement']}\n")
+            f.write(f"Главная идея текста: {res['core_argument']}\n")
             f.write(f"Бинарные оппозиции: {res['opposition']['dominant']} : {res['opposition']['subordinate']}\n")
             f.write(f"Инверсия: {res['inverted_assertion']}\n")
-            f.write("Ограничения исходной позиции:\n") 
+            f.write("Ограничения исходной позиции:\n")
             for frag in res['supporting_fragments']:
                 f.write(f"  • \"{frag['fragment']}\"\n")
-                f.write(f"    → {frag['explanation']}\n")  
+                f.write(f"    → {frag['explanation']}\n")
             f.write("\n")
+
 
 if __name__ == "__main__":
     FILENAME = "ii.txt"
@@ -187,7 +267,7 @@ if __name__ == "__main__":
     if target_file.exists():
         print(f"Анализ файла: {FILENAME}...")
         final_results = analyze_file(str(target_file))
-        save_results(final_results, str(script_dir / "analysis_ii"))
-        print(f"Результаты сохранены в analysis_ii.txt")
+        save_results(final_results, str(script_dir / "final_analysis"))
+        print(f"Результаты сохранены в final_analysis.txt")
     else:
         print(f"Файл {FILENAME} не найден.")
